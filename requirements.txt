@@ -1,0 +1,4 @@
+geope==0.0.5
+matplotlib==3.11.2
+ipykernel==7.3.0
+scienceplots==2.2.2

@@ -1,0 +1,15 @@
+[project]
+name = "paper"
+version = "0.1.0"
+description = "Figures and notebooks GEOPE paper"
+requires-python = ">=3.11"
+dependencies = [
+    "geope==0.0.5",
+    "matplotlib==3.11.2",
+    "ipykernel==7.3.0",
+    "scienceplots==2.2.2"
+]
+
+[tool.uv]
+# Scripts and notebooks only, not an installable package.
+package = false
