@@ -40,7 +40,6 @@ from scipy.optimize import least_squares
 # Re-exported so that `from common import *` is the whole of a notebook's preamble.
 from geope import (  # noqa: F401
     LBFGS,
-    ApproximateQuadraticArmijo,
     Armijo,
     Geope,
     Grape,
@@ -49,7 +48,6 @@ from geope import (  # noqa: F401
     NewtonSaddleFree,
     NewtonTRM,
     Parameters,
-    QuadraticArmijo,
 )
 from geope.geope import linear_comb_projected_coeffs_multigate  # noqa: F401
 from geope.jax import (  # noqa: F401
