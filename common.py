@@ -148,14 +148,6 @@ plt.rcParams.update(
 def save_figure(fig, name, width=None):
     """Write ``fig`` to ``figures/<name>.pdf`` at an exact width.
 
-    ``bbox_inches="tight"`` crops to the ink, so two figures that declare the same
-    ``figsize`` still save at different widths as soon as their labels differ. So:
-    crop tight vertically, then pad the box back out horizontally to ``width``,
-    keeping the ink centred. Ink *wider* than the target is an assertion rather than a
-    silent crop, because that means a legend or label has escaped the canvas — which
-    is a layout bug, and the only reason to see it is that tight cropping used to hide
-    it.
-
     Args:
         fig: The figure to write.
         name: Basename, without the extension.
@@ -287,14 +279,7 @@ def power_fit(name, x, y, fit_from):
 
 
 def time_batch(fn, args, rounds, *, label=""):
-    """One batch of ``rounds`` timings of a warmed-up jitted callable.
-
-    ``rounds`` is explicit rather than defaulted: Figure 2 times over 15 and Figure 4
-    over 25, and when this lived in Figure 2's cell the default silently made itself
-    available to Figure 4 as well. A non-empty ``label`` turns on the heartbeat,
-    throttled by `PROGRESS_SECONDS` exactly as `timed_trajectory`'s is: one `eigh`
-    call at $L=800$ takes 46 s, so a batch of 15 is a silent eleven minutes otherwise.
-    """
+    """One batch of ``rounds`` timings of a warmed-up jitted callable."""
     timings = []
     announced = time.perf_counter()
     for index in range(rounds):
@@ -312,23 +297,12 @@ def time_batch(fn, args, rounds, *, label=""):
 
 
 def reduce_samples(samples):
-    """The min over batches of the median within a batch, in seconds.
-
-    Median within a batch rejects a single scheduling hiccup; minimum across batches
-    rejects a *sustained* one, which a median cannot -- a batch run while another
-    process is busy is uniformly slow, and its median reports that load rather than
-    the arithmetic.
-    """
+    """The min over batches of the median within a batch, in seconds."""
     return float(np.min(np.median(np.asarray(samples), axis=1)))
 
 
 def roughness(fields):
-    r"""RMS step-to-step change relative to RMS amplitude, over the given columns.
-
-    Dimensionless, so pulses of different amplitude compare: 0 is constant in time,
-    and white noise sits near $\sqrt2$, successive samples being independent so their
-    difference carries twice the variance.
-    """
+    r"""RMS step-to-step change relative to RMS amplitude, over the given columns."""
     fields = np.asarray(fields)
     scale = np.sqrt(np.mean(fields**2))
     if scale == 0:
@@ -342,13 +316,7 @@ def roughness(fields):
 
 
 def spread_slug(spread):
-    r"""Filename-safe name for an initial spread, in units of $\pi$.
-
-    The spread is the knob most likely to be re-tuned, so it belongs in the file
-    *name* and not only in the sidecar config: two sweeps that differ in nothing else
-    then sit side by side on disk instead of behind two opaque digests. ``1.0``
-    becomes ``spread1pi``, ``0.5`` becomes ``spread0p5pi``.
-    """
+    r"""Filename-safe name for an initial spread, in units of $\pi$."""
     return "spread{}pi".format(f"{spread:g}".replace(".", "p"))
 
 
@@ -659,23 +627,14 @@ def warm_up(optimiser, init_pulse, config, max_step_size=None):
     _optimise(optimiser, config, max_steps=1, max_step_size=max_step_size)
 
 
-#: Seconds between step-level heartbeats. A run shorter than this prints nothing; a
-#: NewtonRFO run at $L=120$, which takes an hour, prints every minute. Throttling on
-#: the clock rather than on the step index is what lets one setting serve both --
-#: GEOPE takes 6 ms a step and RFO takes 20 s.
+#: Seconds between step-level heartbeats. 
 PROGRESS_SECONDS = 60.0
 
 
 def timed_trajectory(
     optimiser, init_pulse, config, *, label="", max_step_size=None, max_steps=None
 ):
-    """One run: ``(fidelity, cumulative seconds)`` per step, step 0 included.
-
-    The clock is read inside a callback, after `History.record` has already pulled the
-    step to the host — a JAX dispatch is asynchronous, so stamping it earlier would
-    time the dispatch rather than the work. A non-empty ``label`` turns on the
-    heartbeat, which reports where the run has got to while it is still going.
-    """
+    """One run: ``(fidelity, cumulative seconds)`` per step, step 0 included."""
     max_steps = MAX_STEPS if max_steps is None else max_steps
     reinit(optimiser, init_pulse)
     optimiser.history.reset()
@@ -713,18 +672,7 @@ def timed_trajectory(
 
 
 def timed_trial(optimiser, init_pulse, config, *, max_step_size=None, max_steps=None):
-    """``(final infidelity, iterations, seconds)`` for one seed.
-
-    What a sweep that keeps no trajectories wants. Deliberately *not* a reduction of
-    `timed_trajectory`: that one stamps the clock in a per-step callback, which is
-    what lets it plot against wall time but also puts a host round-trip in every
-    step. This times the whole run as one span instead, so the seconds it reports are
-    comparable with the blocks already on disk.
-
-    The clock stops *after* the fidelities are pulled to the host: a JAX dispatch is
-    asynchronous, so stopping it before the sync would time the dispatch rather than
-    the work.
-    """
+    """``(final infidelity, iterations, seconds)`` for one seed."""
     max_steps = MAX_STEPS if max_steps is None else max_steps
     reinit(optimiser, init_pulse)
     optimiser.history.reset()
@@ -753,7 +701,7 @@ def traj_config(steps, method, spread):
         "steps": steps,
         "method": method,
         "config": repr(METHODS[method]),
-        "spread": spread,
+        "spread": float(spread),
         "n_qubits": 3,
         "max_steps": MAX_STEPS,
         "precision": PRECISION,
