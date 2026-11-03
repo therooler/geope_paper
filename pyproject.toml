@@ -13,3 +13,8 @@ dependencies = [
 [tool.uv]
 # Scripts and notebooks only, not an installable package.
 package = false
+
+[dependency-groups]
+dev = [
+    "notebook>=7.6.3",
+]

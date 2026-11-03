@@ -417,7 +417,9 @@ def save_block(npz_path, json_path, cfg, fidelities, seconds, totals):
     )
 
 
-def run_block(cfg, build_optimiser, n_runs, *, spread=None, force=False, verbose=True):
+def run_block(
+    cfg, build_optimiser, n_runs, *, spread=None, force=False, verbose=True, max_steps=None
+):
     """Every seed of one block, reading and extending the cache.
 
     Args:
@@ -432,6 +434,8 @@ def run_block(cfg, build_optimiser, n_runs, *, spread=None, force=False, verbose
         verbose: Print a line per run as it lands, and one per block. The per-run line
             is the heartbeat: a block is silent until its last seed otherwise, and one
             NewtonRFO block at $L=120$ has run for eleven hours.
+        max_steps: Iteration budget per run, defaulting to `MAX_STEPS`. It is the
+            caller's job to put it in ``cfg`` when it differs from the default.
 
     Returns:
         ``(fidelities, seconds)``, each a list of ``n_runs`` arrays.
@@ -465,7 +469,11 @@ def run_block(cfg, build_optimiser, n_runs, *, spread=None, force=False, verbose
         for seed in range(have, n_runs):
             pulse = random_pulse(params, np.random.default_rng(seed), spread)
             fidelity, elapsed = timed_trajectory(
-                optimiser, pulse, config, label=f"seed {seed}" if verbose else ""
+                optimiser,
+                pulse,
+                config,
+                label=f"seed {seed}" if verbose else "",
+                max_steps=max_steps,
             )
             fidelities.append(fidelity)
             seconds.append(elapsed)
@@ -507,10 +515,20 @@ def run_block(cfg, build_optimiser, n_runs, *, spread=None, force=False, verbose
 # ---------------------------------------------------------------------------
 
 _X = np.array([[0, 1], [1, 0]], dtype=complex)
+_Z = np.array([[1, 0], [0, -1]], dtype=complex)
 TARGETS = {
     "CNOT": multicontrol_unitary(_X, 1),
     "CCX": multicontrol_unitary(_X, 2),  # the Toffoli
+    "CCZ": multicontrol_unitary(_Z, 2),  # its diagonal cousin, for extra_fig1_ccz
+    "QFT3": qft_unitary(3),  # the 3-qubit QFT, for extra_fig3_qft3
+    "QFT5": qft_unitary(5),  # the 5-qubit QFT of the paper's Fig. 4(c), for extra_fig7
 }
+_SWAP = np.array([[1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0], [0, 0, 0, 1]], dtype=complex)
+# The Fredkin (controlled-SWAP), for extra_fig2_fredkin: control on the first qubit, SWAP on
+# the other two -- the same control-first convention as `multicontrol_unitary`.
+TARGETS["CSWAP"] = np.block(
+    [[np.eye(4, dtype=complex), np.zeros((4, 4))], [np.zeros((4, 4)), _SWAP]]
+)
 
 
 def make_parameters(n, steps, target, *, spread=1.0, seed=0):
@@ -534,18 +552,84 @@ def make_parameters(n, steps, target, *, spread=1.0, seed=0):
     )
 
 
-def make_parameters_cnot(steps, target, *, spread=1.0, seed=0, drift_values=None):
-    r"""The ``n``-atom Rydberg array driving ``target`` over ``steps`` segments.
+def rydberg_positions(n):
+    """2-D atom coordinates of the paper's Fig. 2 arrays, in units of the square's side."""
+    if n == 5:  # a unit square with an atom in the middle, Fig. 2(c)
+        return np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.5, 0.5]])
+    raise NotImplementedError(f"no geometry defined for n = {n}")
 
-    Controls are $\Omega_i\sigma^x_i$ and $\Delta_i\sigma^z_i$, one pair per atom; the
-    drift is $\sigma^z_i\sigma^z_j$ on every pair at equal strength.
 
-    ``drift_values`` is the ZZ coefficient *per segment*, i.e. $J\,\Delta t$;
+def rydberg_couplings(positions):
+    r"""``{(i, j): J_ij}`` over every pair, 1-indexed, with $J_{ij} = (r_{\min}/r_{ij})^6$.
+
+    Normalised so the strongest coupling is 1: for the five-atom array that is the
+    centre-to-corner coupling, with the square's edges at $1/8$ and its diagonals at
+    $1/64$.
+    """
+    n = len(positions)
+    pairs = [(i, j) for i in range(1, n + 1) for j in range(i + 1, n + 1)]
+    distances = {
+        pair: float(np.linalg.norm(positions[pair[0] - 1] - positions[pair[1] - 1]))
+        for pair in pairs
+    }
+    r_min = min(distances.values())
+    return {pair: (r_min / r) ** 6 for pair, r in distances.items()}
+
+
+def make_parameters_rydberg(n, steps, target, *, spread=1.0, seed=0):
+    r"""The ``n``-atom Rydberg array of the paper's Fig. 2, driving ``target``.
+
+    The same controls as `make_parameters`, $\Omega_i\sigma^x_i$ and
+    $\Delta_i\sigma^z_i$ on every atom, but the drift is **distance-weighted**: the
+    $\sigma^z_i\sigma^z_j$ couplings are the van der Waals ones of the array's actual
+    geometry, `rydberg_couplings`, not all equal. This is the model `fig4c_qft.ipynb`
+    defines locally; it is here so that `extra_fig7_qft5_lbfgs.ipynb` shares it.
+    """
+    if isinstance(target, str):
+        target = TARGETS[target]
+    couplings = rydberg_couplings(rydberg_positions(n))
+    return Parameters(
+        basis=construct_full_pauli_basis(n),
+        control={i: ["x", "z"] for i in range(1, n + 1)},
+        drift={pair: ["zz"] for pair in couplings},
+        drift_values={pair: {"zz": J} for pair, J in couplings.items()},
+        target=target,
+        piecewise_steps=steps,
+        init_spread=spread,
+        seed=seed,
+    )
+
+
+def make_parameters_cnot(
+    steps,
+    target,
+    *,
+    spread=1.0,
+    seed=0,
+    drift_values=None,
+    control=None,
+    param_transform=None,
+    n_experimental_params=None,
+):
+    r"""The two-atom Rydberg pair driving ``target`` over ``steps`` segments.
+
+    ``control`` picks the local operators, in the library's ``{atom: [ops]}`` form;
+    the default is $\Omega_i\sigma^x_i$ and $\Delta_i\sigma^z_i$ on both atoms. Atom 0
+    is the right-hand tensor factor (the CNOT's target), atom 1 the left (its
+    control). The drift is $\sigma^z_0\sigma^z_1$.
+
+    ``param_transform`` and ``n_experimental_params`` are passed straight to
+    `Parameters`: a map from the fields one actually has (say a global drive and
+    a global detuning) to the coefficients of those local operators, for when
+    the fields are tied or carry a constant offset.
+
+    ``drift_values`` is the ZZ coefficient *per segment*, i.e. $g\,\Delta t$;
     ``None`` keeps the library default of 1.
     """
     if isinstance(target, str):
         target = TARGETS[target]
-    control = {0: ["x", "z"], 1: ["x", "z"]}
+    if control is None:
+        control = {0: ["x", "z"], 1: ["x", "z"]}
     drift = {(0, 1): ["zz"]}
     return Parameters(
         basis=construct_full_pauli_basis(2),
@@ -556,6 +640,8 @@ def make_parameters_cnot(steps, target, *, spread=1.0, seed=0, drift_values=None
         piecewise_steps=steps,
         init_spread=spread,
         seed=seed,
+        param_transform=param_transform,
+        n_experimental_params=n_experimental_params,
     )
 
 
@@ -693,7 +779,13 @@ METHODS = {
 }
 
 def traj_config(steps, method, spread):
-    """The block's cache key: the fig1 config, under a ``traj_`` tag."""
+    """The block's cache key: the Figure 3 config, under a ``traj_`` tag.
+
+    ``columns`` names which parameter columns the block logs. It is in the key
+    because it changes every array stored: ``"proj+drift"`` is `Parameters.free`,
+    every column an optimiser can move, so an iterate's unitary can be rebuilt from
+    the cache; the earlier ``"proj"`` layout kept the six controls alone.
+    """
     cfg = {
         "tag": f"traj_CCX_L{steps}_{spread_slug(spread)}_{method}",
         "kind": "fig1-toffoli-parameter-trajectories",
@@ -703,6 +795,7 @@ def traj_config(steps, method, spread):
         "config": repr(METHODS[method]),
         "spread": float(spread),
         "n_qubits": 3,
+        "columns": "proj+drift",
         "max_steps": MAX_STEPS,
         "precision": PRECISION,
     }
@@ -713,7 +806,12 @@ def traj_config(steps, method, spread):
 
 def _build_trajectory(steps, method, spread):
     params = make_parameters(3, steps, "CCX", spread=spread)
-    free = np.asarray(params.projected_indices, dtype=bool)
+    # Every column the optimiser can move, exactly the columns of
+    # `Parameters.free`: the six controls and the three ZZ drift couplings.
+    # `Grape.update_step` scatters its step over all of them, so the drift columns
+    # are *not* held fixed in a GRAPE run; GEOPE leaves them where `init` put them.
+    # Logging the controls alone would lose part of a GRAPE iterate.
+    free = np.asarray(params.proj_drift_indices, dtype=bool)
     flag = {"gs": False}
 
     def logging_fn(opt):
